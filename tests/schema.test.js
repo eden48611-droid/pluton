@@ -42,6 +42,7 @@ test('lock protection blocks immutable My Tip / Agreed Tip updates', () => {
 
   assert.match(migration, /validate_prediction_lock/);
   assert.match(migration, /My Tip \/ Agreed Tip are immutable/);
+  assert.match(migration, /NEW\.predicted_result IS DISTINCT FROM OLD\.predicted_result/);
   assert.match(migration, /is_locked/);
 });
 

@@ -5,14 +5,9 @@
 -- Status: PRODUCTION READY
 -- =========================================
 
--- =======================================
--- PART 1: EXTENSIONS & FUNCTIONS
--- =======================================
-
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- Function: Update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_timestamp()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -21,32 +16,36 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Function: Validate My Tip / Agreed Tip cannot be auto-updated
 CREATE OR REPLACE FUNCTION validate_prediction_lock()
 RETURNS TRIGGER AS $$
 BEGIN
-    IF OLD.is_locked = TRUE AND NEW.prediction_result != OLD.prediction_result THEN
+    IF OLD.is_locked = TRUE AND NEW.is_locked = FALSE THEN
+        RAISE EXCEPTION 'Locked prediction cannot be unlocked';
+    END IF;
+
+    IF OLD.is_locked = TRUE AND NEW.predicted_result IS DISTINCT FROM OLD.predicted_result THEN
         RAISE EXCEPTION 'Cannot update locked prediction (My Tip / Agreed Tip are immutable)';
     END IF;
+
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
--- Function: Create audit log entry
 CREATE OR REPLACE FUNCTION audit_record_change()
 RETURNS TRIGGER AS $$
 BEGIN
     INSERT INTO audit_logs (table_name, record_id, action, old_values, new_values)
-    VALUES (TG_TABLE_NAME, NEW.fixture_id, TG_OP, row_to_json(OLD), row_to_json(NEW));
+    VALUES (
+        TG_TABLE_NAME,
+        COALESCE(NEW.fixture_id, OLD.fixture_id),
+        TG_OP,
+        row_to_json(OLD),
+        row_to_json(NEW)
+    );
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
--- =======================================
--- PART 2: CORE TABLES
--- =======================================
-
--- Sports Registry
 CREATE TABLE IF NOT EXISTS sports (
     sport_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) NOT NULL UNIQUE,
@@ -60,7 +59,6 @@ CREATE TABLE IF NOT EXISTS sports (
 CREATE TRIGGER update_sports_timestamp BEFORE UPDATE ON sports
     FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 
--- Seasons
 CREATE TABLE IF NOT EXISTS seasons (
     season_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     sport_id UUID NOT NULL REFERENCES sports(sport_id) ON DELETE CASCADE,
@@ -77,7 +75,6 @@ CREATE TABLE IF NOT EXISTS seasons (
 CREATE TRIGGER update_seasons_timestamp BEFORE UPDATE ON seasons
     FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 
--- Teams
 CREATE TABLE IF NOT EXISTS teams (
     team_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     sport_id UUID NOT NULL REFERENCES sports(sport_id) ON DELETE CASCADE,
@@ -94,7 +91,6 @@ CREATE TABLE IF NOT EXISTS teams (
 CREATE TRIGGER update_teams_timestamp BEFORE UPDATE ON teams
     FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 
--- Players
 CREATE TABLE IF NOT EXISTS players (
     player_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     sport_id UUID NOT NULL REFERENCES sports(sport_id) ON DELETE CASCADE,
@@ -113,7 +109,6 @@ CREATE TABLE IF NOT EXISTS players (
 CREATE TRIGGER update_players_timestamp BEFORE UPDATE ON players
     FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 
--- Competitions / Leagues
 CREATE TABLE IF NOT EXISTS competitions (
     competition_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     sport_id UUID NOT NULL REFERENCES sports(sport_id) ON DELETE CASCADE,
@@ -130,10 +125,6 @@ CREATE TABLE IF NOT EXISTS competitions (
 
 CREATE TRIGGER update_competitions_timestamp BEFORE UPDATE ON competitions
     FOR EACH ROW EXECUTE FUNCTION update_timestamp();
-
--- =======================================
--- PART 3: FIXTURES / EVENTS
--- =======================================
 
 CREATE TABLE IF NOT EXISTS fixtures (
     fixture_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -163,10 +154,6 @@ CREATE TRIGGER update_fixtures_timestamp BEFORE UPDATE ON fixtures
 
 CREATE TRIGGER audit_fixtures_changes AFTER INSERT OR UPDATE OR DELETE ON fixtures
     FOR EACH ROW EXECUTE FUNCTION audit_record_change();
-
--- =======================================
--- PART 4: STANDINGS & FORM
--- =======================================
 
 CREATE TABLE IF NOT EXISTS standings (
     standing_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -204,10 +191,6 @@ CREATE TABLE IF NOT EXISTS team_form (
 CREATE TRIGGER update_team_form_timestamp BEFORE UPDATE ON team_form
     FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 
--- =======================================
--- PART 5: PREDICTIONS
--- =======================================
-
 CREATE TABLE IF NOT EXISTS prediction_types (
     prediction_type_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(50) NOT NULL UNIQUE,
@@ -237,10 +220,6 @@ CREATE TRIGGER update_predictions_timestamp BEFORE UPDATE ON predictions
 
 CREATE TRIGGER validate_prediction_immutability BEFORE UPDATE ON predictions
     FOR EACH ROW EXECUTE FUNCTION validate_prediction_lock();
-
--- =======================================
--- PART 6: RESULTS & PERFORMANCE
--- =======================================
 
 CREATE TABLE IF NOT EXISTS match_results (
     result_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -274,10 +253,6 @@ CREATE TABLE IF NOT EXISTS performance_history (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(sport_id, competition_id, prediction_type_id, period, recorded_date)
 );
-
--- =======================================
--- PART 7: DATA SOURCES
--- =======================================
 
 CREATE TABLE IF NOT EXISTS data_sources (
     source_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -317,10 +292,6 @@ CREATE TABLE IF NOT EXISTS sync_logs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- =======================================
--- PART 8: ALERTS & MONITORING
--- =======================================
-
 CREATE TABLE IF NOT EXISTS alerts (
     alert_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     alert_type VARCHAR(80) NOT NULL,
@@ -331,10 +302,6 @@ CREATE TABLE IF NOT EXISTS alerts (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     resolved_at TIMESTAMPTZ
 );
-
--- =======================================
--- PART 9: USER MANAGEMENT
--- =======================================
 
 CREATE TABLE IF NOT EXISTS roles (
     role_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -357,10 +324,6 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TRIGGER update_users_timestamp BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 
--- =======================================
--- PART 10: AUDIT LOGS
--- =======================================
-
 CREATE TABLE IF NOT EXISTS audit_logs (
     audit_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     table_name VARCHAR(100) NOT NULL,
@@ -372,143 +335,26 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- =======================================
--- PART 11: PRODUCTION INDEXES
--- =======================================
-
 CREATE INDEX IF NOT EXISTS idx_fixtures_sport_date ON fixtures(sport_id, event_date DESC);
 CREATE INDEX IF NOT EXISTS idx_fixtures_status ON fixtures(status);
 CREATE INDEX IF NOT EXISTS idx_fixtures_locked ON fixtures(is_locked);
 CREATE INDEX IF NOT EXISTS idx_fixtures_competition ON fixtures(competition_id);
-
 CREATE INDEX IF NOT EXISTS idx_predictions_fixture ON predictions(fixture_id);
 CREATE INDEX IF NOT EXISTS idx_predictions_type ON predictions(prediction_type_id);
 CREATE INDEX IF NOT EXISTS idx_predictions_locked ON predictions(is_locked);
-
 CREATE INDEX IF NOT EXISTS idx_standings_competition ON standings(competition_id, position);
 CREATE INDEX IF NOT EXISTS idx_standings_team ON standings(team_id);
-
 CREATE INDEX IF NOT EXISTS idx_data_sources_sport ON data_sources(sport_id);
 CREATE INDEX IF NOT EXISTS idx_data_sources_active ON data_sources(is_active);
-
 CREATE INDEX IF NOT EXISTS idx_alerts_unresolved ON alerts(is_resolved, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
-
 CREATE INDEX IF NOT EXISTS idx_performance_date ON performance_history(recorded_date DESC);
 CREATE INDEX IF NOT EXISTS idx_performance_sport ON performance_history(sport_id);
-
 CREATE INDEX IF NOT EXISTS idx_audit_table_record ON audit_logs(table_name, record_id);
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs(created_at DESC);
-
 CREATE INDEX IF NOT EXISTS idx_sync_logs_source ON sync_logs(source_id);
 CREATE INDEX IF NOT EXISTS idx_sync_logs_timestamp ON sync_logs(created_at DESC);
 
--- =======================================
--- PART 12: SEED DATA
--- =======================================
-
--- Insert Sports
-INSERT INTO sports (name, category, description) VALUES
-('Football', 'Team', 'Association Football / Soccer'),
-('Basketball', 'Team', 'Basketball leagues and tournaments'),
-('Handball', 'Team', 'Handball competitions'),
-('Formula 1', 'Motor', 'Formula 1 Racing'),
-('Formula 2', 'Motor', 'Formula 2 Racing'),
-('Formula 3', 'Motor', 'Formula 3 Racing'),
-('IndyCar', 'Motor', 'IndyCar Racing'),
-('Formula E', 'Motor', 'Formula E Racing'),
-('MotoGP', 'Motor', 'MotoGP Motorcycle Racing'),
-('Moto2', 'Motor', 'Moto2 Motorcycle Racing'),
-('Moto3', 'Motor', 'Moto3 Motorcycle Racing'),
-('WSBK', 'Motor', 'World Superbike Championship'),
-('Moto-E', 'Motor', 'Moto-E Motorcycle Racing'),
-('WRC', 'Motor', 'World Rally Championship'),
-('Tennis', 'Individual', 'Tennis (ATP / WTA)'),
-('Volleyball', 'Team', 'Volleyball competitions'),
-('Ice Hockey', 'Team', 'Ice Hockey leagues'),
-('American Football', 'Team', 'NFL and other American Football'),
-('Baseball', 'Team', 'MLB and other Baseball'),
-('Cricket', 'Team', 'Cricket competitions'),
-('Rugby', 'Team', 'Rugby Union and League'),
-('Badminton', 'Individual', 'Badminton tournaments'),
-('Table Tennis', 'Individual', 'Table Tennis competitions'),
-('Athletics', 'Individual', 'Track and Field'),
-('Swimming', 'Individual', 'Swimming competitions'),
-('Cycling', 'Individual', 'Cycling races'),
-('Darts', 'Individual', 'Professional Darts'),
-('Snooker', 'Individual', 'Snooker tournaments'),
-('Boxing', 'Individual', 'Professional Boxing'),
-('MMA', 'Individual', 'Mixed Martial Arts'),
-('Sumo', 'Individual', 'Sumo Wrestling'),
-('Australian Rules Football', 'Team', 'AFL'),
-('Esports', 'Other', 'Professional Esports')
-ON CONFLICT (name) DO NOTHING;
-
--- Insert Seasons
-INSERT INTO seasons (sport_id, season_name, start_date, end_date) 
-SELECT sport_id, '2024/25', '2024-07-01'::date, '2025-06-30'::date FROM sports WHERE name = 'Football'
-UNION ALL
-SELECT sport_id, '2024/25', '2024-10-01'::date, '2025-06-30'::date FROM sports WHERE name = 'Basketball'
-UNION ALL
-SELECT sport_id, '2024/25', '2024-08-01'::date, '2025-07-31'::date FROM sports WHERE name = 'Handball'
-UNION ALL
-SELECT sport_id, '2025', '2025-03-16'::date, '2025-12-08'::date FROM sports WHERE name = 'Formula 1'
-UNION ALL
-SELECT sport_id, '2025', '2025-03-15'::date, '2025-12-07'::date FROM sports WHERE name = 'Formula 2'
-UNION ALL
-SELECT sport_id, '2025', '2025-03-15'::date, '2025-12-07'::date FROM sports WHERE name = 'MotoGP'
-ON CONFLICT (sport_id, season_name) DO NOTHING;
-
--- Insert Prediction Types
-INSERT INTO prediction_types (name, description, is_system_locked) VALUES
-('my_tip', 'User-entered manual prediction - IMMUTABLE once locked', TRUE),
-('agreed_tip', 'Validated team consensus - IMMUTABLE once locked', TRUE),
-('pluton_tip', 'Automated PLUTON generated prediction - Can update until match starts', FALSE)
-ON CONFLICT (name) DO NOTHING;
-
--- Insert Roles
-INSERT INTO roles (role_name, description) VALUES
-('admin', 'System administrator with full access'),
-('manager', 'Prediction manager and oversight'),
-('analyst', 'Data analyst and prediction creator'),
-('viewer', 'Read-only access to predictions and results')
-ON CONFLICT (role_name) DO NOTHING;
-
--- Insert Data Sources (150 total - 100 Main + 50 Backup)
-INSERT INTO data_sources (source_name, source_type, source_priority, is_main, is_backup, is_active, reliability_score) VALUES
-('API-Football', 'REST API', 1, TRUE, FALSE, TRUE, 98),
-('ESPN Football', 'REST API', 2, TRUE, FALSE, TRUE, 96),
-('FlashScore Football', 'Web Scraper', 3, TRUE, FALSE, TRUE, 94),
-('Official Premier League', 'REST API', 1, TRUE, FALSE, TRUE, 100),
-('Official La Liga', 'REST API', 1, TRUE, FALSE, TRUE, 100),
-('Official Serie A', 'REST API', 1, TRUE, FALSE, TRUE, 100),
-('Official Bundesliga', 'REST API', 1, TRUE, FALSE, TRUE, 100),
-('Official Ligue 1', 'REST API', 1, TRUE, FALSE, TRUE, 100),
-('NBA Official API', 'REST API', 1, TRUE, FALSE, TRUE, 100),
-('ESPN Basketball', 'REST API', 2, TRUE, FALSE, TRUE, 97),
-('EuroLeague', 'REST API', 2, TRUE, FALSE, TRUE, 96),
-('F1 Official', 'REST API', 1, TRUE, FALSE, TRUE, 100),
-('ESPN F1', 'REST API', 2, TRUE, FALSE, TRUE, 98),
-('MotoGP Official', 'REST API', 1, TRUE, FALSE, TRUE, 100),
-('EHF Handball', 'REST API', 1, TRUE, FALSE, TRUE, 99),
-('Tennis ATP', 'REST API', 1, TRUE, FALSE, TRUE, 100),
-('Tennis WTA', 'REST API', 1, TRUE, FALSE, TRUE, 100),
-('Volleyball FIVB', 'REST API', 1, TRUE, FALSE, TRUE, 99),
-('Cricket ICC', 'REST API', 1, TRUE, FALSE, TRUE, 100),
-('Rugby World Rugby', 'REST API', 1, TRUE, FALSE, TRUE, 99),
--- Backup sources start at 21
-('Backup API-Football', 'REST API', 51, FALSE, TRUE, TRUE, 92),
-('Backup ESPN', 'REST API', 52, FALSE, TRUE, TRUE, 90),
-('Backup FlashScore', 'Web Scraper', 53, FALSE, TRUE, TRUE, 88),
-('Backup Transfermarkt', 'Web Scraper', 54, FALSE, TRUE, TRUE, 85),
-('Backup Sofascore', 'REST API', 55, FALSE, TRUE, TRUE, 91)
-ON CONFLICT DO NOTHING;
-
--- =======================================
--- PART 13: VERIFY MIGRATION SUCCESS
--- =======================================
-
--- Create migration tracking table
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER NOT NULL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
@@ -519,6 +365,3 @@ INSERT INTO schema_migrations (version, name) VALUES
 (1, '001_phase1_base_schema.sql')
 ON CONFLICT (version) DO NOTHING;
 
--- =========================================
--- END OF PHASE 1 PRODUCTION SCHEMA v1.0
--- =========================================

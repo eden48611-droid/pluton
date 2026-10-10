@@ -32,7 +32,13 @@ CREATE OR REPLACE FUNCTION audit_record_change()
 RETURNS TRIGGER AS $$
 BEGIN
     INSERT INTO audit_logs (table_name, record_id, action, old_values, new_values)
-    VALUES (TG_TABLE_NAME, COALESCE(NEW.fixture_id, OLD.fixture_id), TG_OP, row_to_json(OLD), row_to_json(NEW));
+    VALUES (
+        TG_TABLE_NAME,
+        COALESCE(NEW.fixture_id, OLD.fixture_id),
+        TG_OP,
+        row_to_json(OLD),
+        row_to_json(NEW)
+    );
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
