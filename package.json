@@ -1,0 +1,20 @@
+{
+  "name": "pluton",
+  "version": "1.0.0",
+  "description": "PLUTON Phase 1 production scaffold and SQL contract validation",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "pluton",
+    "sports",
+    "analytics",
+    "postgresql"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
